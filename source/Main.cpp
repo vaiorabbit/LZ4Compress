@@ -164,6 +164,7 @@ namespace app
 
         LZ4_streamDecode_t cLZ4StreamDecode;
         LZ4_setStreamDecode(&cLZ4StreamDecode, NULL, 0);
+
         for ( uint32 i = 0; i < unBlockCount; ++i )
         {
             uint32 unSegmentSize;
@@ -172,8 +173,8 @@ namespace app
 
             int nDecompressedSize = LZ4_decompress_safe_continue(
                 &cLZ4StreamDecode,
-                pSegmentContent.get(),
-                pOutFileContent.get()+app::unBlockSize * i,
+                (char*)pSegmentContent.get(),
+                (char*)pOutFileContent.get() + (app::unBlockSize * i),
                 unSegmentSize,
                 app::unBlockSize);
             if ( nDecompressedSize <= 0 )
@@ -230,9 +231,9 @@ namespace app
         // Do compress
         {
             uint32 unBlockCount = nInFileSize / app::unBlockSize;
-            if ( nInFileSize % app::unBlockSize != 0 )
+            if ( (nInFileSize % app::unBlockSize) != 0 )
             {
-                ++unBlockSize;
+                ++unBlockCount;
             }
             BinaryHeader header;
             WriteFourCC(   &header.FourCC, 'L','Z','4','A' );
@@ -243,41 +244,43 @@ namespace app
 
             LZ4_stream_t cLZ4Stream;
             LZ4_resetStream(&cLZ4Stream);
-            size_t nCurrentInOffset = 0;
-            size_t nAvailableFileSize = nInFileSize;
-            while ( nAvailableFileSize > 0 )
+            size_t nInputOffset = 0;
+            size_t nAvailableInputSize = nInFileSize;
+            int nSegmentOutSize = LZ4_COMPRESSBOUND(app::unBlockSize);
+            std::unique_ptr<char[]> pCompressedSegmentContent( new char[nSegmentOutSize] );
+            while ( nAvailableInputSize > 0 )
             {
-                int nOutFileContentSize = LZ4_COMPRESSBOUND(app::unBlockSize);
-                std::unique_ptr<char[]> pOutFileContent( new char[nOutFileContentSize] );
-                int nOutFileSize = LZ4_compress_fast_continue(
+                bool bLastSegment = nAvailableInputSize < app::unBlockSize;
+
+                int nCompressedSegmentSize = LZ4_compress_fast_continue(
                     &cLZ4Stream,
-                    pInFileContent.get()+nCurrentInOffset,
-                    pOutFileContent.get(),
-                    nAvailableFileSize >= app::unBlockSize ? app::unBlockSize : nAvailableFileSize,
-                    nOutFileContentSize,
+                    (char*)pInFileContent.get()+nInputOffset,
+                    (char*)pCompressedSegmentContent.get(),
+                    bLastSegment ? nAvailableInputSize : app::unBlockSize,
+                    nSegmentOutSize,
                     1);
-                if ( nOutFileSize <= 0 )
+                if ( nCompressedSegmentSize <= 0 )
                 {
                     bError = true;
                     break;
                 }
                 uint32 unOutSize;
-                WriteValueU32( &unOutSize, nOutFileSize, app::bModeEndianSwap );
+                WriteValueU32( &unOutSize, nCompressedSegmentSize, app::bModeEndianSwap );
                 app::fOut.write( (char*)&unOutSize, sizeof(uint32) );
-                app::fOut.write( (char*)pOutFileContent.get(), nOutFileSize );
+                app::fOut.write( (char*)pCompressedSegmentContent.get(), nCompressedSegmentSize );
 
-                if ( nAvailableFileSize >= app::unBlockSize )
+                if ( bLastSegment )
                 {
-                    nCurrentInOffset += app::unBlockSize;
-                    nAvailableFileSize -= app::unBlockSize;
+                    nAvailableInputSize = 0;
                 }
                 else
                 {
-                    nCurrentInOffset += (app::unBlockSize - nAvailableFileSize);
-                    nAvailableFileSize = 0;
+                    nInputOffset += app::unBlockSize;
+                    nAvailableInputSize -= app::unBlockSize;
                 }
             }
         }
+
         app::fIn.close();
         app::fOut.close();
 
